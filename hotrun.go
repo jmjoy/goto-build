@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"gopkg.in/fsnotify.v1"
 )
@@ -74,13 +76,26 @@ func watch() error {
 		}
 	}
 
+loop:
 	for {
 		select {
 		case event := <-gWatcher.Events:
 			if event.Op&fsnotify.Write == fsnotify.Write {
-				fmt.Printf("\n>> File [%s] has changed! Rerun the program!\n", event.Name)
-				restart()
+				continue loop
 			}
+
+			if filepath.Ext(event.Name) != ".go" {
+				continue loop
+			}
+
+			now := time.Now()
+			if gPeriod.Add(time.Second).After(now) {
+				continue loop
+			}
+			gPeriod = now
+
+			fmt.Printf("\n>> File [%s] has changed! Rerun the program!\n", event.Name)
+			go restart()
 
 		case err := <-gWatcher.Errors:
 			fmt.Println("Watcher error:", err)
@@ -115,14 +130,21 @@ func getRecursiveDirList(dir string, dirList *list.List) error {
 }
 
 func restart() {
-	if cmd != nil && cmd.Process != nil {
-		cmd.Process.Kill()
+	gLock.Lock()
+	defer gLock.Unlock()
+
+	if gCmd != nil && gCmd.Process != nil {
+		err := gCmd.Process.Kill()
+		if err != nil {
+			fmt.Println("KILL ERROR:", err)
+		}
 	}
-	cmd = exec.Command("go run *.go")
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	go cmd.Run()
+	gCmd = exec.Command("go", "run", "main.go")
+	gCmd.Stdin = os.Stdin
+	gCmd.Stdout = os.Stdout
+	gCmd.Stderr = os.Stderr
+	gCmd.Env = os.Environ()
+	go gCmd.Run()
 }
 
 func handlerFatalErr(err error) {
@@ -143,5 +165,8 @@ var (
 
 var (
 	gWatcher *fsnotify.Watcher
-	cmd      *exec.Cmd
+	gCmd     *exec.Cmd
+
+	gLock   *sync.Mutex = &sync.Mutex{}
+	gPeriod time.Time   = time.Now()
 )
