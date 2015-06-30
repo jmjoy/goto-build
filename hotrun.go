@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/fsnotify.v1"
@@ -25,6 +27,16 @@ func main() {
 	}
 	if !fInfo.IsDir() {
 		handlerFatalErr(fmt.Errorf("Fatal: the path isn't a directory"))
+		return
+	}
+	gDir, err = filepath.Abs(gDir)
+	if err != nil {
+		handlerFatalErr(err)
+		return
+	}
+	err = os.Chdir(gDir)
+	if err != nil {
+		handlerFatalErr(err)
 		return
 	}
 
@@ -53,7 +65,26 @@ func watch() error {
 	getRecursiveDirList(gDir, dirList)
 
 	for e := dirList.Front(); e != nil; e = e.Next() {
+
 		fmt.Println(e.Value)
+
+		err = gWatcher.Add(e.Value.(string))
+		if err != nil {
+			return err
+		}
+	}
+
+	for {
+		select {
+		case event := <-gWatcher.Events:
+			if event.Op&fsnotify.Write == fsnotify.Write {
+				fmt.Printf("\n>> File [%s] has changed! Rerun the program!\n", event.Name)
+				restart()
+			}
+
+		case err := <-gWatcher.Errors:
+			fmt.Println("Watcher error:", err)
+		}
 	}
 
 	return nil
@@ -74,13 +105,24 @@ func getRecursiveDirList(dir string, dirList *list.List) error {
 		if strings.HasPrefix(fInfo.Name(), ".") {
 			continue
 		}
-		err = getRecursiveDirList(fInfo.Name(), dirList)
+		err = getRecursiveDirList(filepath.Join(dir, fInfo.Name()), dirList)
 		if err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+func restart() {
+	if cmd != nil && cmd.Process != nil {
+		cmd.Process.Kill()
+	}
+	cmd = exec.Command("go run *.go")
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	go cmd.Run()
 }
 
 func handlerFatalErr(err error) {
@@ -99,4 +141,7 @@ var (
 	gDir string
 )
 
-var gWatcher *fsnotify.Watcher
+var (
+	gWatcher *fsnotify.Watcher
+	cmd      *exec.Cmd
+)
