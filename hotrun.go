@@ -41,6 +41,8 @@ func main() {
 		return
 	}
 
+	autoRun()
+
 	err = watch()
 	if err != nil {
 		handlerFatalErr(err)
@@ -94,7 +96,7 @@ loop:
 			gPeriod = now
 
 			fmt.Printf("\n>> File [%s] has changed! Rerun the program!\n", event.Name)
-			restart()
+			gChanRestart <- true
 
 		case err := <-gWatcher.Errors:
 			fmt.Println("Watcher error:", err)
@@ -128,27 +130,23 @@ func getRecursiveDirList(dir string, dirList *list.List) error {
 	return nil
 }
 
-func stop() {
-	if gCmd != nil && gCmd.Process != nil {
-		err := gCmd.Process.Kill()
+func autoRun() {
+	cmd := exec.Command("go", "run", "main.go")
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = os.Environ()
+	go cmd.Run()
+
+	go func() {
+		<-gChanRestart
+		err := cmd.Process.Kill()
 		if err != nil {
 			fmt.Println("KILL ERROR:", err)
 		}
-	}
-}
-
-func start() {
-	gCmd = exec.Command("go", "run", "main.go")
-	gCmd.Stdin = os.Stdin
-	gCmd.Stdout = os.Stdout
-	gCmd.Stderr = os.Stderr
-	gCmd.Env = os.Environ()
-	go gCmd.Run()
-}
-
-func restart() {
-	stop()
-	start()
+		_ = cmd
+		autoRun()
+	}()
 }
 
 func handlerFatalErr(err error) {
@@ -169,7 +167,7 @@ var (
 
 var (
 	gWatcher *fsnotify.Watcher
-	gCmd     *exec.Cmd
 
-	gPeriod time.Time = time.Now()
+	gPeriod      = time.Now()
+	gChanRestart = make(chan bool)
 )
