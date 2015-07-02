@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"gopkg.in/fsnotify.v1"
@@ -80,7 +79,7 @@ loop:
 	for {
 		select {
 		case event := <-gWatcher.Events:
-			if event.Op&fsnotify.Write == fsnotify.Write {
+			if event.Op&fsnotify.Write != fsnotify.Write {
 				continue loop
 			}
 
@@ -95,7 +94,7 @@ loop:
 			gPeriod = now
 
 			fmt.Printf("\n>> File [%s] has changed! Rerun the program!\n", event.Name)
-			go restart()
+			restart()
 
 		case err := <-gWatcher.Errors:
 			fmt.Println("Watcher error:", err)
@@ -129,22 +128,27 @@ func getRecursiveDirList(dir string, dirList *list.List) error {
 	return nil
 }
 
-func restart() {
-	gLock.Lock()
-	defer gLock.Unlock()
-
+func stop() {
 	if gCmd != nil && gCmd.Process != nil {
 		err := gCmd.Process.Kill()
 		if err != nil {
 			fmt.Println("KILL ERROR:", err)
 		}
 	}
+}
+
+func start() {
 	gCmd = exec.Command("go", "run", "main.go")
 	gCmd.Stdin = os.Stdin
 	gCmd.Stdout = os.Stdout
 	gCmd.Stderr = os.Stderr
 	gCmd.Env = os.Environ()
 	go gCmd.Run()
+}
+
+func restart() {
+	stop()
+	start()
 }
 
 func handlerFatalErr(err error) {
@@ -167,6 +171,5 @@ var (
 	gWatcher *fsnotify.Watcher
 	gCmd     *exec.Cmd
 
-	gLock   *sync.Mutex = &sync.Mutex{}
-	gPeriod time.Time   = time.Now()
+	gPeriod time.Time = time.Now()
 )
