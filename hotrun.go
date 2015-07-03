@@ -52,6 +52,7 @@ func main() {
 
 func parseArgs() {
 	flag.StringVar(&gDir, "d", "", "The directory to be watch")
+	flag.StringVar(&gOuput, "o", "", "The Oput filename")
 
 	flag.Parse()
 }
@@ -96,6 +97,7 @@ loop:
 			gPeriod = now
 
 			fmt.Printf("\n>> File [%s] has changed! Rerun the program!\n", event.Name)
+			autoBuild()
 			gChanRestart <- true
 
 		case err := <-gWatcher.Errors:
@@ -130,19 +132,48 @@ func getRecursiveDirList(dir string, dirList *list.List) error {
 	return nil
 }
 
-func autoRun() {
-	cmd := exec.Command("go", "run", "main.go")
+func autoBuild() {
+	var output string
+	if gOuput != "" {
+		output = gOuput
+	} else {
+		output = filepath.Base(gDir)
+	}
+
+	cmd := exec.Command("go", "build", "-o", output)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = os.Environ()
-	go cmd.Run()
+	cmd.Run()
+}
+
+func autoRun() {
+	var cmdName string
+	if gOuput != "" {
+		cmdName = gOuput
+	} else {
+		cmdName = filepath.Base(gDir)
+	}
+	cmd := exec.Command("./" + cmdName)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = os.Environ()
+	go func() {
+		err := cmd.Run()
+		if err != nil {
+			fmt.Println("RUN ERROR:", err)
+		}
+	}()
 
 	go func() {
 		<-gChanRestart
-		err := cmd.Process.Kill()
-		if err != nil {
-			fmt.Println("KILL ERROR:", err)
+		if cmd != nil && cmd.Process != nil {
+			err := cmd.Process.Kill()
+			if err != nil {
+				fmt.Println("KILL ERROR:", err)
+			}
 		}
 		_ = cmd
 		autoRun()
@@ -162,7 +193,8 @@ const (
 )
 
 var (
-	gDir string
+	gDir   string
+	gOuput string
 )
 
 var (
