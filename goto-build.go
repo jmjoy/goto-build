@@ -29,6 +29,8 @@ var (
 	gIsWaiting bool
 	gPrevious  time.Time
 	gMutex     sync.Mutex
+
+	gLastCmd *exec.Cmd
 )
 
 func init() {
@@ -190,7 +192,8 @@ func buildAndRun() {
 	}()
 
 	// build
-	cmd, err := execCommand(gBuildCmd)
+	cmd := execCommand(gBuildCmd)
+	err := cmd.Run()
 	if err != nil {
 		fmt.Printf(">> BUILD ERROR: %s\n\n", err.Error())
 		return
@@ -200,19 +203,20 @@ func buildAndRun() {
 	fmt.Printf(">> Restarting...\n\n")
 
 	// stop
-	if cmd != nil && cmd.Process != nil {
+	if gLastCmd != nil {
 		err := cmd.Process.Kill()
 		if err != nil && err.Error() != "os: process already finished" {
 			fmt.Printf(">> KILL ERROR: %s\n\n", err.Error())
 			return
 		}
+		fmt.Println(">> KILL SUCCESS")
 	}
 
-	// start
-	go execCommand(gRunCmd)
+	gLastCmd := execCommand(gRunCmd)
+	go gLastCmd.Run()
 }
 
-func execCommand(command string) (*exec.Cmd, error) {
+func execCommand(command string) *exec.Cmd {
 	cmdSlice := strings.Split(command, " ")
 	if len(cmdSlice) == 0 {
 		panic("command format error: " + gBuildCmd)
@@ -222,7 +226,7 @@ func execCommand(command string) (*exec.Cmd, error) {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = os.Environ()
-	return cmd, cmd.Run()
+	return cmd
 }
 
 func logStatus() {
