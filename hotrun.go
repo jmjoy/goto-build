@@ -1,7 +1,6 @@
 package main
 
 import (
-	"container/list"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -9,78 +8,115 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/fsnotify.v1"
 )
 
+const (
+	VERSION = "v0.1"
+)
+
+// flag args
+var (
+	gBuildCmd string
+	gRunCmd   string
+	gIsHelp   bool
+)
+
+var (
+	gIsWaiting bool
+	gPrevious  time.Time
+	gMutex     sync.Mutex
+)
+
+func init() {
+	flag.StringVar(&gBuildCmd, "build-cmd", "", "Specify build command")
+	flag.StringVar(&gRunCmd, "run-cmd", "", "Specify run command")
+	flag.BoolVar(&gIsHelp, "h", false, "Show help info")
+
+	flag.Usage = func() {
+		fmt.Println("auto-build [options] [directory]")
+		flag.PrintDefaults()
+	}
+}
+
 func main() {
-	parseArgs()
+	parseArg()
 
-	if gDir == "" {
-		gDir, _ = os.Getwd()
+	watcher, err := initWatcher()
+	if err != nil {
+		fmt.Println(err)
+		return
 	}
+	defer watcher.Close()
 
-	fInfo, err := os.Stat(gDir)
-	if err != nil {
-		handlerFatalErr(err)
-		return
-	}
-	if !fInfo.IsDir() {
-		handlerFatalErr(fmt.Errorf("Fatal: the path isn't a directory"))
-		return
-	}
-	gDir, err = filepath.Abs(gDir)
-	if err != nil {
-		handlerFatalErr(err)
-		return
-	}
-	err = os.Chdir(gDir)
-	if err != nil {
-		handlerFatalErr(err)
-		return
-	}
-
-	err = watch()
-	if err != nil {
-		handlerFatalErr(err)
-		return
-	}
+	handleGoSourceChange(watcher)
 }
 
-func parseArgs() {
-	flag.StringVar(&gDir, "d", "", "The directory to be watch")
-	flag.StringVar(&gOuput, "o", "", "The Oput filename")
-
+func parseArg() {
 	flag.Parse()
-}
 
-func watch() error {
-	var err error
-	gWatcher, err = fsnotify.NewWatcher()
-	if err != nil {
-		return err
+	if gIsHelp {
+		flag.Usage()
+		os.Exit(0)
 	}
-	defer gWatcher.Close()
 
-	dirList := list.New()
-	getRecursiveDirList(gDir, dirList)
-
-	for e := dirList.Front(); e != nil; e = e.Next() {
-
-		fmt.Println(e.Value)
-
-		err = gWatcher.Add(e.Value.(string))
-		if err != nil {
-			return err
+	// current work directory
+	wd := flag.Arg(0)
+	if wd != "" {
+		if err := os.Chdir(wd); err != nil {
+			fmt.Println(err)
+			return
 		}
 	}
 
+	// set build command
+	if gBuildCmd == "" {
+		gBuildCmd = "go build"
+	}
+
+	// set run command
+	if gRunCmd == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			panic(err)
+		}
+		gRunCmd = filepath.Join(cwd, filepath.Base(cwd))
+	}
+}
+
+func initWatcher() (*fsnotify.Watcher, error) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return nil, err
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Printf(">> Watching [%s]\n\n", cwd)
+
+	watchDirs := make(map[string]struct{}) // hashset
+	getRecursiveDirs(cwd, watchDirs)
+
+	for dir := range watchDirs {
+		watcher.Add(dir)
+	}
+
+	return watcher, nil
+}
+
+func handleGoSourceChange(watcher *fsnotify.Watcher) {
 loop:
 	for {
 		select {
-		case event := <-gWatcher.Events:
-			if event.Op&fsnotify.Write != fsnotify.Write {
+		case event := <-watcher.Events:
+
+			if !isFileChanged(event.Op) {
 				continue loop
 			}
 
@@ -88,25 +124,33 @@ loop:
 				continue loop
 			}
 
-			now := time.Now()
-			if gPeriod.Add(time.Second).After(now) {
+			if gIsWaiting {
 				continue loop
 			}
-			gPeriod = now
 
-			fmt.Printf("\n>> File [%s] has changed! Rerun the program!\n", event.Name)
-			autoRun()
+			go func() {
+				gMutex.Lock()
+				defer gMutex.Unlock()
 
-		case err := <-gWatcher.Errors:
-			fmt.Println("Watcher error:", err)
+				if time.Now().Sub(gPrevious) < time.Second {
+					return
+				}
+				gPrevious = time.Now()
+
+				fmt.Printf(">> File [%s] has changed!\n\n", event.Name)
+				buildAndRun()
+			}()
+
+		case err := <-watcher.Errors:
+
+			fmt.Printf(">> WATCH ERROr: %s\n\n", err.Error())
+
 		}
 	}
-
-	return nil
 }
 
-func getRecursiveDirList(dir string, dirList *list.List) error {
-	dirList.PushBack(dir)
+func getRecursiveDirs(dir string, dirs map[string]struct{}) error {
+	dirs[dir] = struct{}{}
 
 	fInfos, err := ioutil.ReadDir(dir)
 	if err != nil {
@@ -120,7 +164,7 @@ func getRecursiveDirList(dir string, dirList *list.List) error {
 		if strings.HasPrefix(fInfo.Name(), ".") {
 			continue
 		}
-		err = getRecursiveDirList(filepath.Join(dir, fInfo.Name()), dirList)
+		err = getRecursiveDirs(filepath.Join(dir, fInfo.Name()), dirs)
 		if err != nil {
 			return err
 		}
@@ -129,78 +173,58 @@ func getRecursiveDirList(dir string, dirList *list.List) error {
 	return nil
 }
 
-func autoBuild() {
-	var output string
-	if gOuput != "" {
-		output = gOuput
-	} else {
-		output = filepath.Base(gDir)
+func isFileChanged(op fsnotify.Op) bool {
+	if op&fsnotify.Write == fsnotify.Write {
+		return true
+	}
+	if op&fsnotify.Create == fsnotify.Create {
+		return true
+	}
+	return false
+}
+
+func buildAndRun() {
+	gIsWaiting = true
+	defer func() {
+		gIsWaiting = false
+	}()
+
+	// build
+	cmd, err := execCommand(gBuildCmd)
+	if err != nil {
+		fmt.Printf(">> BUILD ERROR: %s\n\n", err.Error())
+		return
+	}
+	fmt.Printf(">> BUILD SUCCESS\n\n")
+
+	fmt.Printf(">> Restarting...\n\n")
+
+	// stop
+	if cmd != nil && cmd.Process != nil {
+		err := cmd.Process.Kill()
+		if err != nil && err.Error() != "os: process already finished" {
+			fmt.Printf(">> KILL ERROR: %s\n\n", err.Error())
+			return
+		}
 	}
 
-	cmd := exec.Command("go", "build", "-o", output)
+	// start
+	go execCommand(gRunCmd)
+}
+
+func execCommand(command string) (*exec.Cmd, error) {
+	cmdSlice := strings.Split(command, " ")
+	if len(cmdSlice) == 0 {
+		panic("command format error: " + gBuildCmd)
+	}
+	cmd := exec.Command(cmdSlice[0], cmdSlice[1:]...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = os.Environ()
-	err := cmd.Run()
-	if err != nil {
-		fmt.Println("BUILD ERR:", err)
-	}
-	fmt.Println("BUILD SUCCESS")
+	return cmd, cmd.Run()
 }
 
-func autoRun() {
-	if gCmd != nil && gCmd.Process != nil {
-		err := gCmd.Process.Kill()
-		if err != nil {
-			fmt.Println("KILL ERROR:", err)
-		} else {
-			fmt.Println("KILL SUCCESS")
-		}
-	}
+func logStatus() {
 
-	autoBuild()
-
-	var cmdName string
-	if gOuput != "" {
-		cmdName = gOuput
-	} else {
-		cmdName = filepath.Base(gDir)
-	}
-	gCmd = exec.Command("./" + cmdName)
-	gCmd.Stdin = os.Stdin
-	gCmd.Stdout = os.Stdout
-	gCmd.Stderr = os.Stderr
-	gCmd.Env = os.Environ()
-
-	fmt.Println("START")
-	err := gCmd.Start()
-	if err != nil {
-		fmt.Println("START ERROR:", err)
-	}
 }
-
-func handlerFatalErr(err error) {
-	usage := fmt.Sprintf("\nUsage: %s [OPTIONS]\n", NAME)
-	fmt.Fprintln(os.Stderr, err)
-	fmt.Fprintln(os.Stderr, usage)
-	flag.PrintDefaults()
-}
-
-const (
-	NAME    = "hotrun"
-	VERSION = "0.1"
-)
-
-var (
-	gDir   string
-	gOuput string
-)
-
-var (
-	gCmd     *exec.Cmd
-	gWatcher *fsnotify.Watcher
-
-	gPeriod      = time.Now()
-	gChanRestart = make(chan bool)
-)
