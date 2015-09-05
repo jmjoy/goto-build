@@ -41,8 +41,6 @@ func main() {
 		return
 	}
 
-	autoRun()
-
 	err = watch()
 	if err != nil {
 		handlerFatalErr(err)
@@ -97,8 +95,7 @@ loop:
 			gPeriod = now
 
 			fmt.Printf("\n>> File [%s] has changed! Rerun the program!\n", event.Name)
-			autoBuild()
-			gChanRestart <- true
+			autoRun()
 
 		case err := <-gWatcher.Errors:
 			fmt.Println("Watcher error:", err)
@@ -145,39 +142,42 @@ func autoBuild() {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = os.Environ()
-	cmd.Run()
+	err := cmd.Run()
+	if err != nil {
+		fmt.Println("BUILD ERR:", err)
+	}
+	fmt.Println("BUILD SUCCESS")
 }
 
 func autoRun() {
+	if gCmd != nil && gCmd.Process != nil {
+		err := gCmd.Process.Kill()
+		if err != nil {
+			fmt.Println("KILL ERROR:", err)
+		} else {
+			fmt.Println("KILL SUCCESS")
+		}
+	}
+
+	autoBuild()
+
 	var cmdName string
 	if gOuput != "" {
 		cmdName = gOuput
 	} else {
 		cmdName = filepath.Base(gDir)
 	}
-	cmd := exec.Command("./" + cmdName)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Env = os.Environ()
-	go func() {
-		err := cmd.Run()
-		if err != nil {
-			fmt.Println("RUN ERROR:", err)
-		}
-	}()
+	gCmd = exec.Command("./" + cmdName)
+	gCmd.Stdin = os.Stdin
+	gCmd.Stdout = os.Stdout
+	gCmd.Stderr = os.Stderr
+	gCmd.Env = os.Environ()
 
-	go func() {
-		<-gChanRestart
-		if cmd != nil && cmd.Process != nil {
-			err := cmd.Process.Kill()
-			if err != nil {
-				fmt.Println("KILL ERROR:", err)
-			}
-		}
-		_ = cmd
-		autoRun()
-	}()
+	fmt.Println("START")
+	err := gCmd.Start()
+	if err != nil {
+		fmt.Println("START ERROR:", err)
+	}
 }
 
 func handlerFatalErr(err error) {
@@ -198,6 +198,7 @@ var (
 )
 
 var (
+	gCmd     *exec.Cmd
 	gWatcher *fsnotify.Watcher
 
 	gPeriod      = time.Now()
