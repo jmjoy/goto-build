@@ -23,7 +23,7 @@ _testmain.go
 *.test
 *.prof
 
-/_testdata/
+/_testdata/_testdata
 
 /hotrun
 /goto-build

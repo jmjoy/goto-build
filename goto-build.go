@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/issue9/term/colors"
 	"gopkg.in/fsnotify.v1"
 )
 
@@ -100,7 +101,7 @@ func initWatcher() (*fsnotify.Watcher, error) {
 		panic(err)
 	}
 
-	fmt.Printf(">> Watching [%s]\n\n", cwd)
+	logStatus(INFO, "Watching [%s]\n", cwd)
 
 	watchDirs := make(map[string]struct{}) // hashset
 	getRecursiveDirs(cwd, watchDirs)
@@ -113,6 +114,9 @@ func initWatcher() (*fsnotify.Watcher, error) {
 }
 
 func handleGoSourceChange(watcher *fsnotify.Watcher) {
+	// first
+	buildAndRun()
+
 loop:
 	for {
 		select {
@@ -139,14 +143,13 @@ loop:
 				}
 				gPrevious = time.Now()
 
-				fmt.Printf(">> File [%s] has changed!\n\n", event.Name)
+				logStatus(INFO, "File [%s] has changed!\n", event.Name)
 				buildAndRun()
 			}()
 
 		case err := <-watcher.Errors:
 
-			fmt.Printf(">> WATCH ERROr: %s\n\n", err.Error())
-
+			logStatus(ERROR, "WATCH ERROR: %s\n", err.Error())
 		}
 	}
 }
@@ -195,24 +198,23 @@ func buildAndRun() {
 	cmd := execCommand(gBuildCmd)
 	err := cmd.Run()
 	if err != nil {
-		fmt.Printf(">> BUILD ERROR: %s\n\n", err.Error())
+		logStatus(ERROR, "BUILD ERROR: %s\n", err.Error())
 		return
 	}
-	fmt.Printf(">> BUILD SUCCESS\n\n")
+	logStatus(SUCCESS, "BUILD SUCCESS\n")
 
-	fmt.Printf(">> Restarting...\n\n")
+	logStatus(INFO, "Restarting...\n")
 
 	// stop
 	if gLastCmd != nil {
-		err := cmd.Process.Kill()
-		if err != nil && err.Error() != "os: process already finished" {
-			fmt.Printf(">> KILL ERROR: %s\n\n", err.Error())
+		err := gLastCmd.Process.Kill()
+		if err != nil {
+			logStatus(ERROR, "KILL ERROR: %s\n", err.Error())
 			return
 		}
-		fmt.Println(">> KILL SUCCESS")
 	}
 
-	gLastCmd := execCommand(gRunCmd)
+	gLastCmd = execCommand(gRunCmd)
 	go gLastCmd.Run()
 }
 
@@ -222,13 +224,42 @@ func execCommand(command string) *exec.Cmd {
 		panic("command format error: " + gBuildCmd)
 	}
 	cmd := exec.Command(cmdSlice[0], cmdSlice[1:]...)
-	cmd.Stdin = os.Stdin
+	// cmd.Stdin = os.Stdin // 使Command.Process不能正常Kill掉的罪魁祸首
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = os.Environ()
 	return cmd
 }
 
-func logStatus() {
+type LogLevel int
 
+const (
+	SUCCESS = iota
+	INFO
+	ERROR
+)
+
+func logStatus(lv LogLevel, format string, args ...interface{}) {
+	var color colors.Color
+	var status string
+
+	switch lv {
+	case SUCCESS:
+		color = colors.Green
+		status = "SUCCESS"
+
+	case INFO:
+		color = colors.Blue
+		status = "INFO"
+
+	case ERROR:
+		color = colors.Red
+		status = "ERROR"
+
+	default:
+		panic("Undefined LogLevel")
+	}
+
+	colors.Print(colors.Stdout, color, colors.Default, "["+status+"]")
+	colors.Printf(colors.Stdout, colors.Default, colors.Default, " "+format, args...)
 }
